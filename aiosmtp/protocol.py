@@ -106,51 +106,47 @@ class SmtpProtocol(asyncio.StreamReaderProtocol):
     def expect_command(self):
         self._read_mode = READ_MODE_COMMAND
 
-    @asyncio.coroutine
-    def run(self):
+    async def run(self):
         # First, wait until we have readers and writers in place
-        yield from self.connection_open
+        await self.connection_open
 
         # Say hi, then process commands.
-        yield from self.send(b'220 ' + self._fqdn + b' ESMTP')
+        await self.send(b'220 ' + self._fqdn + b' ESMTP')
         while not self.connection_closed.done():
             try:
                 if self._read_mode == READ_MODE_COMMAND:
-                    yield from self.read_command()
+                    await self.read_command()
                 else:
-                    yield from self.read_data()
+                    await self.read_data()
             except asyncio.CancelledError:
                 break
 
-        yield from self.close()
+        await self.close()
 
-    @asyncio.coroutine
-    def read_command(self):
+    async def read_command(self):
         try:
-            line = yield from self.reader.read_crlf_line()
+            line = await self.reader.read_crlf_line()
         except errors.TooMuchDataError:
-            yield from self.send(b'500 Line too long')
+            await self.send(b'500 Line too long')
             return
 
-        yield from self.handle_command(line)
+        await self.handle_command(line)
 
-    @asyncio.coroutine
-    def read_data(self):
+    async def read_data(self):
         try:
-            data = yield from self.reader.read_data(max_len=self._max_size)
+            data = await self.reader.read_data(max_len=self._max_size)
         except errors.TooMuchDataError:
-            yield from self.send(b'552 Message exceeds fixed maximum size')
+            await self.send(b'552 Message exceeds fixed maximum size')
             return
 
-        yield from self.handle_data(data)
+        await self.handle_data(data)
 
-    @asyncio.coroutine
-    def handle_data(self, data):
+    async def handle_data(self, data):
         if self._max_size and len(data) >= self._max_size:
-            yield from self.send(b'522 Message exceeds fixed maximum size')
+            await self.send(b'522 Message exceeds fixed maximum size')
             return
 
-        asyncio.async(
+        asyncio.ensure_future(
             self.handler.message_received(
                 self._sender, self._recipients, data), loop=self._loop)
 
@@ -160,10 +156,9 @@ class SmtpProtocol(asyncio.StreamReaderProtocol):
             response = b'250 Ok'
 
         self.reset_state()
-        yield from self.send(response)
+        await self.send(response)
 
-    @asyncio.coroutine
-    def handle_command(self, line):
+    async def handle_command(self, line):
         ix = line.find(b' ')
         if ix > 0:
             cmd = line[:ix]
@@ -174,59 +169,55 @@ class SmtpProtocol(asyncio.StreamReaderProtocol):
 
         method = self.COMMANDS[cmd.upper()]
         if method:
-            yield from method(self, arg)
+            await method(self, arg)
         else:
-            yield from self.send(b'500 PEBKAC')
+            await self.send(b'500 PEBKAC')
 
-    @asyncio.coroutine
-    def close(self):
+    async def close(self):
         try:
             if self.writer.can_write_eof():
-                yield from self.writer.write_eof()
+                await self.writer.write_eof()
         except Exception:
             pass
 
         try:
-            yield from self.writer.close()
+            await self.writer.close()
         except Exception:
             pass
 
         self.connection_closed.set_result(None)
 
-    @asyncio.coroutine
-    def send(self, line):
+    async def send(self, line):
         if not line.endswith(const.LINE_TERM):
             line += const.LINE_TERM
 
         self.writer.write(line)
 
-        yield from self.writer.drain()
+        await self.writer.drain()
 
     #
     # SMTP commands follow.
     #
 
-    @asyncio.coroutine
-    def helo(self, arg):
+    async def helo(self, arg):
         if self._helo:
-            yield from self.send(b'503 Duplicate HELO/EHLO')
+            await self.send(b'503 Duplicate HELO/EHLO')
         elif not arg:
-            yield from self.send(b'501 Syntax: HELO hostname')
+            await self.send(b'501 Syntax: HELO hostname')
         else:
             self._is_esmtp = False
             self._helo = arg
-            yield from self.send(b'250 ' + self._fqdn)
+            await self.send(b'250 ' + self._fqdn)
 
-    @asyncio.coroutine
-    def ehlo(self, arg):
+    async def ehlo(self, arg):
         if self._helo:
-            yield from self.send(b'503 Duplicate HELO/EHLO')
+            await self.send(b'503 Duplicate HELO/EHLO')
             return
 
         helo, arg = self.split_command(arg)
 
         if not helo:
-            yield from self.send(b'501 Syntax: EHLO hostname')
+            await self.send(b'501 Syntax: EHLO hostname')
             return
 
         if arg:
@@ -241,20 +232,20 @@ class SmtpProtocol(asyncio.StreamReaderProtocol):
             resp_lines.append(b'250-SIZE ' + sz)
         resp_lines.append(b'250 HELP')
         resp = const.LINE_TERM.join(resp_lines)
-        yield from self.send(resp)
+        await self.send(resp)
 
-    @asyncio.coroutine
-    def vrfy(self, arg):
+    async def vrfy(self, arg):
         if arg is None:
             self.writer.write(b'501 Syntax: VRFY <')
             return
 
         if arg in self._allowed_recipients:
-            self.send(b'252 Cannot verify user, but will accept message and '
-                      b'attempt delivery')
+            await self.send(
+                b'252 Cannot verify user, but will accept message and '
+                b'attempt delivery')
             return
 
-        result = yield from self.handler.verify(arg)
+        result = await self.handler.verify(arg)
         if result:
             self._allowed_recipients.add(result)
             self.send(b'252 Cannot verify user, but will accept message and '
@@ -262,39 +253,37 @@ class SmtpProtocol(asyncio.StreamReaderProtocol):
         else:
             self.send(b'502 Could not verify ' + arg)
 
-    @asyncio.coroutine
-    def rset(self, arg):
+    async def rset(self, arg):
         self.reset_state()
-        yield from self.send(b'250 Ok')
+        await self.send(b'250 Ok')
 
-    @asyncio.coroutine
-    def mail(self, arg):
+    async def mail(self, arg):
         if not arg:
-            yield from self.send(b'501 Syntax: MAIL FROM:<address>')
+            await self.send(b'501 Syntax: MAIL FROM:<address>')
             return
         if not self._helo:
-            yield from self.send(b'503 Error: Send HELO first')
+            await self.send(b'503 Error: Send HELO first')
             return
         if self._sender:
-            yield from self.send(b'503 Error: Nested MAIL command')
+            await self.send(b'503 Error: Nested MAIL command')
             return
 
         arg = self.strip_keyword(arg, b'FROM:')
         addr, params = self.parse_addr(arg)
 
         if not addr:
-            yield from self.send(b'501 Syntax: MAIL FROM: <address>')
+            await self.send(b'501 Syntax: MAIL FROM: <address>')
             return
 
         if not self.is_esmtp and params:
-            yield from self.send(b'501 Syntax: MAIL FROM: <address>')
+            await self.send(b'501 Syntax: MAIL FROM: <address>')
             return
 
         if params:
             params = self.parse_mail_params(params)
 
             if not params:
-                yield from self.send(b'501 Syntax: MAIL FROM: <address>')
+                await self.send(b'501 Syntax: MAIL FROM: <address>')
                 return
 
             for k, v in dict(params).items():
@@ -304,7 +293,7 @@ class SmtpProtocol(asyncio.StreamReaderProtocol):
                         if self._max_size and n >= self._max_size:
                             m = (b'552 Message size exceeds fixed maximium '
                                  b'message size')
-                            yield from self.send(m)
+                            await self.send(m)
                             return
 
                         self._message_size = n
@@ -313,35 +302,34 @@ class SmtpProtocol(asyncio.StreamReaderProtocol):
                         break
 
             if params:
-                yield from self.send(b'555 Unrecognized extension')
+                await self.send(b'555 Unrecognized extension')
                 return
 
         self._sender = addr
-        yield from self.send(b'250 Ok')
+        await self.send(b'250 Ok')
 
-    @asyncio.coroutine
-    def rcpt(self, arg):
+    async def rcpt(self, arg):
         if not self._helo:
-            yield from self.send(b'503 Error: Send HELO first')
+            await self.send(b'503 Error: Send HELO first')
             return
 
         if not self._sender:
-            yield from self.send(b'503 Error: Send MAIL first')
+            await self.send(b'503 Error: Send MAIL first')
             return
 
         if not arg:
-            yield from self.send(b'501 Syntax: RCPT <address>')
+            await self.send(b'501 Syntax: RCPT <address>')
             return
 
         arg = self.strip_keyword(arg, b'TO:')
         addr, params = self.parse_addr(arg)
 
         if not addr:
-            yield from self.send(b'501 Syntax: RCPT <address>')
+            await self.send(b'501 Syntax: RCPT <address>')
             return
 
         if params:
-            yield from self.send(b'555 Unrecognized extension')
+            await self.send(b'555 Unrecognized extension')
             return
 
         if self._message_size and self._max_size:
@@ -351,52 +339,48 @@ class SmtpProtocol(asyncio.StreamReaderProtocol):
             if self._max_size <= total_size:
                 self._recipients_truncated = True
                 msg = b'552 Channel size limit exceeded: ' + addr
-                yield from self.send(msg)
+                await self.send(msg)
                 return
 
         self._recipients.append(addr)
-        yield from self.send(b'250 Ok')
+        await self.send(b'250 Ok')
 
-    @asyncio.coroutine
-    def data(self, arg):
+    async def data(self, arg):
         if arg:
-            yield from self.send(b'501 Syntax: Data')
+            await self.send(b'501 Syntax: Data')
             return
 
         if not self._helo:
-            yield from self.send(b'503 Error: Send HELO first')
+            await self.send(b'503 Error: Send HELO first')
             return
 
         if not self._sender:
-            yield from self.send(b'503 Error: Send MAIL first')
+            await self.send(b'503 Error: Send MAIL first')
             return
 
         if not self._recipients:
-            yield from self.send(b'503 Error: Need RCPT command')
+            await self.send(b'503 Error: Need RCPT command')
             return
 
         self.expect_data()
-        yield from self.send(b'354 End data with <CRLF>.<CRLF>')
+        await self.send(b'354 End data with <CRLF>.<CRLF>')
 
-    @asyncio.coroutine
-    def noop(self, arg):
+    async def noop(self, arg):
         if arg:
-            yield from self.send(b'501 Syntax: NOOP')
+            await self.send(b'501 Syntax: NOOP')
         else:
-            yield from self.send(b'250 Ok')
+            await self.send(b'250 Ok')
 
-    @asyncio.coroutine
-    def quit(self, arg):
+    async def quit(self, arg):
         if arg:
-            yield from self.send(b'501 Syntax: QUIT')
+            await self.send(b'501 Syntax: QUIT')
             return
 
-        yield from self.send(b'221 Ok')
-        yield from self.close()
+        await self.send(b'221 Ok')
+        await self.close()
 
-    @asyncio.coroutine
-    def expn(self, arg):
-        yield from self.send(b'502 Unimplemented')
+    async def expn(self, arg):
+        await self.send(b'502 Unimplemented')
 
     def strip_keyword(self, line, keyword):
         if line.upper().startswith(keyword.upper()):
