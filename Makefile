@@ -1,21 +1,14 @@
-PYTHON=venv/bin/python3.3
+PYTHON=venv/bin/python3.5
 PIP=venv/bin/pip
+EI=venv/bin/easy_install
 NOSE=venv/bin/nosetests
 FLAKE=venv/bin/flake8
 
 build:
 	$(PIP) install -e hg+https://fafhrd91@code.google.com/p/tulip/#egg=tulip
 
-venv:
-	curl -L -O https://raw.githubusercontent.com/pypa/virtualenv/1.10.X/virtualenv.py
-	python3.3 virtualenv.py venv
-	rm -f ./virtualenv.py
-	curl -L -O https://bitbucket.org/pypa/setuptools/raw/bootstrap/ez_setup.py
-	venv/bin/python ez_setup.py
-	rm -f ./ez_setup.py
-	venv/bin/easy_install pip
-
-	$(PIP) install -e hg+https://fafhrd91@code.google.com/p/tulip/#egg=tulip
+env:
+	python3.5 -m venv venv
 	$(PYTHON) ./setup.py develop
 
 dev:
