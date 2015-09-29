@@ -4,8 +4,7 @@ SMTP Server for asyncio
 Requirements
 ------------
 
-- Python >= 3.3
-- asyncio https://pypy.python.org/pypi/asyncio/0.4.1
+- Python >= 3.5
 
 License
 -------
@@ -21,7 +20,7 @@ Building
 
 .. code-block:: bash
 
-    make venv
+    make env
     . venv/bin/activate
 
 Developing
